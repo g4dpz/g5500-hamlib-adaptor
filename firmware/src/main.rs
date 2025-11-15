@@ -47,6 +47,8 @@ const WATCHDOG_PERIOD_MS:u64 = 8300; // Max is 8388ms
 static WATCHDOG_RESET_SYSTEM: Mutex<ThreadModeRawMutex, RefCell<bool>> = Mutex::new(RefCell::new(false));
 
 const DHCP_HOSTNAME:&str = "g5500-hamlib-adaptor";
+const DHCP_TIMEOUT_MS:u64 = 5000;
+
 const NUMBER_HAMLIB_SOCKETS:u16 = 4;
 const SOCKET_TIMEOUT_S:u64 = 60;
 
@@ -118,11 +120,11 @@ async fn control_task(_spawner: Spawner, r: AzElControl) {
     let mut ticker = Ticker::every(Duration::from_millis(250));
     loop
     {
-        (local_demand_run, local_demand_az_degrees, local_demand_el_degrees) = DEMAND_RUN_AZ_EL_DEGREES.lock(|f| f.clone().into_inner());
+        (local_demand_run, local_demand_az_degrees, local_demand_el_degrees) = DEMAND_RUN_AZ_EL_DEGREES.lock(|f| *f.borrow());
 
-        if local_demand_run == true
+        if local_demand_run
         {
-            (local_current_az_degrees, local_current_el_degrees) = CURRENT_AZ_EL_DEGREES.lock(|f| f.clone().into_inner());
+            (local_current_az_degrees, local_current_el_degrees) = CURRENT_AZ_EL_DEGREES.lock(|f| *f.borrow());
             flag_ontarget = true;
 
             // Azimuth
@@ -163,12 +165,12 @@ async fn control_task(_spawner: Spawner, r: AzElControl) {
                 el_dn.set_low();
             }
 
-            if flag_ontarget == true
+            if flag_ontarget
             {
                 // Reset RUN to stopped to prevent more driving
                 DEMAND_RUN_AZ_EL_DEGREES.lock(|f| {
-                    let (_, _az, _el) = f.clone().into_inner();
-                    f.replace((false, _az, _el));
+                    let (_, az, el) = *f.borrow();
+                    f.replace((false, az, el));
                 });
             }
         }
@@ -268,42 +270,34 @@ async fn adc_task(_spawner: Spawner, r: AzElAdc) {
         el_sum = 0;
         el_count = 0;
 
+        // DNL spike values to skip
+        const DNL_SPIKES: [u16; 4] = [512, 1536, 2560, 3584];
+        
         for i in 0..NUM_SAMPLES
         {
-            // Azimuth
-            if buf[2*i] != 512
-                && buf[2*i] != 1536
-                && buf[2*i] != 2560
-                && buf[2*i] != 3584
-            {
-                az_sum += buf[2*i] as u32;
+            let az_val = buf[2*i];
+            let el_val = buf[2*i + 1];
+            
+            // Azimuth - skip DNL spikes
+            if !DNL_SPIKES.contains(&az_val) {
+                az_sum += az_val as u32;
                 az_count += 1;
             }
 
-            // Elevation
-            if buf[(2*i)+1] != 512
-                && buf[(2*i)+1] != 1536
-                && buf[(2*i)+1] != 2560
-                && buf[(2*i)+1] != 3584
-            {
-                el_sum += buf[(2*i)+1] as u32;
+            // Elevation - skip DNL spikes
+            if !DNL_SPIKES.contains(&el_val) {
+                el_sum += el_val as u32;
                 el_count += 1;
             }
         }
 
         // Azimuth
         candidate_az_raw = az_sum as f32 / az_count as f32;
-        candidate_az_degrees = (candidate_az_raw - ADC_RAW_AZ_LOW) / ((ADC_RAW_AZ_HIGH-ADC_RAW_AZ_LOW)/450.0);
-
-        if candidate_az_degrees < 0.0 { candidate_az_degrees = 0.0; }
-        if candidate_az_degrees > 450.0 { candidate_az_degrees = 450.0; }
+        candidate_az_degrees = ((candidate_az_raw - ADC_RAW_AZ_LOW) / ((ADC_RAW_AZ_HIGH-ADC_RAW_AZ_LOW)/450.0)).clamp(0.0, 450.0);
 
         // Elevation
         candidate_el_raw = el_sum as f32 / el_count as f32;
-        candidate_el_degrees = (candidate_el_raw - ADC_RAW_EL_LOW) / ((ADC_RAW_EL_HIGH-ADC_RAW_EL_LOW)/180.0);
-
-        if candidate_el_degrees < 0.0 { candidate_el_degrees = 0.0; }
-        if candidate_el_degrees > 180.0 { candidate_el_degrees = 180.0; }
+        candidate_el_degrees = ((candidate_el_raw - ADC_RAW_EL_LOW) / ((ADC_RAW_EL_HIGH-ADC_RAW_EL_LOW)/180.0)).clamp(0.0, 180.0);
 
         // Update global current AzEl
         CURRENT_AZ_EL_DEGREES.lock(|f| {
@@ -340,30 +334,35 @@ struct Command {
 }
 impl Command {
     // _, \get_info
+    #[inline]
     fn parse_get_info(input: &[u8]) -> IResult<&[u8], &[u8]> {
         alt((
             tag("_"), tag("\\get_info")
         )).parse(input)
     }
     // p, \get_pos
+    #[inline]
     fn parse_get_pos(input: &[u8]) -> IResult<&[u8], &[u8]> {
         alt((
             tag("p"), tag("\\get_pos")
         )).parse(input)
     }
     // S, \stop
+    #[inline]
     fn parse_stop(input: &[u8]) -> IResult<&[u8], &[u8]> {
         alt((
             tag("S"), tag("\\stop")
         )).parse(input)
     }
     // K, \park
+    #[inline]
     fn parse_park(input: &[u8]) -> IResult<&[u8], &[u8]> {
         alt((
             tag("K"), tag("\\park")
         )).parse(input)
     }
     // P 180.00 45.00, \set_pos 180.00 45.00
+    #[inline]
     fn parse_set_pos(input: &[u8]) -> IResult<&[u8], (f32, f32)> {
         preceded(
             pair(
@@ -374,56 +373,52 @@ impl Command {
         ).parse(input)
     }
     // q, \quit
+    #[inline]
     fn parse_quit(input: &[u8]) -> IResult<&[u8], &[u8]> {
         alt((
             tag("q"), tag("\\quit")
         )).parse(input)
     }
     // dump_state
+    #[inline]
     fn parse_dump_state(input: &[u8]) -> IResult<&[u8], &[u8]> {
         tag("\\dump_state")(input)
     }
     // R, \reset
+    #[inline]
     fn parse_reset(input: &[u8]) -> IResult<&[u8], &[u8]> {
         alt((
             tag("R"), tag("\\reset")
         )).parse(input)
     }
+    #[inline]
     fn parse(input: &[u8]) -> (HamlibCommand, f32, f32) {
-        let _ = match Self::parse_get_info(input) {
-            Ok(_) => return (HamlibCommand::GetInfo, 0.0, 0.0),
-            Err(_) => {}
-        };
-        let _ = match Self::parse_get_pos(input) {
-            Ok(_) => return (HamlibCommand::GetPos, 0.0, 0.0),
-            Err(_) => {}
-        };
-        let _ = match Self::parse_stop(input) {
-            Ok(_) => return (HamlibCommand::Stop, 0.0, 0.0),
-            Err(_) => {}
-        };
-        let _ = match Self::parse_park(input) {
-            Ok(_) => return (HamlibCommand::Park, 0.0, 0.0),
-            Err(_) => {}
-        };
-        let _ = match Self::parse_set_pos(input) {
-            Ok((_, (az, el))) => return (HamlibCommand::SetPos, az, el),
-            Err(_) => {}
-        };
-        let _ = match Self::parse_quit(input) {
-            Ok(_) => return (HamlibCommand::Quit, 0.0, 0.0),
-            Err(_) => {}
-        };
-        let _ = match Self::parse_dump_state(input) {
-            Ok(_) => return (HamlibCommand::DumpState, 0.0, 0.0),
-            Err(_) => {}
-        };
-        let _ = match Self::parse_reset(input) {
-            Ok(_) => return (HamlibCommand::Reset, 0.0, 0.0),
-            Err(_) => {}
-        };
+        if Self::parse_get_info(input).is_ok() {
+            return (HamlibCommand::GetInfo, 0.0, 0.0);
+        }
+        if Self::parse_get_pos(input).is_ok() {
+            return (HamlibCommand::GetPos, 0.0, 0.0);
+        }
+        if Self::parse_stop(input).is_ok() {
+            return (HamlibCommand::Stop, 0.0, 0.0);
+        }
+        if Self::parse_park(input).is_ok() {
+            return (HamlibCommand::Park, 0.0, 0.0);
+        }
+        if let Ok((_, (az, el))) = Self::parse_set_pos(input) {
+            return (HamlibCommand::SetPos, az, el);
+        }
+        if Self::parse_quit(input).is_ok() {
+            return (HamlibCommand::Quit, 0.0, 0.0);
+        }
+        if Self::parse_dump_state(input).is_ok() {
+            return (HamlibCommand::DumpState, 0.0, 0.0);
+        }
+        if Self::parse_reset(input).is_ok() {
+            return (HamlibCommand::Reset, 0.0, 0.0);
+        }
 
-        return (HamlibCommand::_None, 0.0, 0.0);
+        (HamlibCommand::_None, 0.0, 0.0)
     }
 }
 
@@ -505,16 +500,23 @@ async fn main(spawner: Spawner) {
     watchdog.feed();
 
     info!("Waiting for DHCP...");
-    let cfg = wait_for_dhcp_config(stack).await;
-    let local_addr = cfg.address.address();
-    info!("IP address: {:?}", local_addr);
-
+    let dhcp_result = wait_for_dhcp_config(stack).await;
+    
     // Feed watchdog either side of DHCP task
     watchdog.feed();
 
-    // Spawn TCP Sockets
-    for _ in 0..NUMBER_HAMLIB_SOCKETS {
-        unwrap!(spawner.spawn(listen_task(stack, 4533)));
+    // Only spawn TCP sockets if DHCP succeeded
+    if let Some(cfg) = dhcp_result {
+        let local_addr = cfg.address.address();
+        info!("DHCP successful - IP address: {:?}", local_addr);
+        
+        // Spawn TCP Sockets
+        for _ in 0..NUMBER_HAMLIB_SOCKETS {
+            unwrap!(spawner.spawn(listen_task(stack, 4533)));
+        }
+    } else {
+        error!("DHCP failed after {}ms timeout", DHCP_TIMEOUT_MS);
+        error!("Retrying");
     }
 
     let mut local_sockets_connected;
@@ -524,18 +526,11 @@ async fn main(spawner: Spawner) {
         sys_led.toggle();
 
         // Set Socket-Connected LED
-        local_sockets_connected = SOCKETS_CONNECTED.lock(|f| f.clone().into_inner());
-        if local_sockets_connected > 0
-        {
-            sockets_led.set_high();
-        }
-        else
-        {
-            sockets_led.set_low();
-        }
+        local_sockets_connected = SOCKETS_CONNECTED.lock(|f| *f.borrow());
+        sockets_led.set_level(if local_sockets_connected > 0 { Level::High } else { Level::Low });
 
         // Reset system if requested, else feed watchdog
-        if WATCHDOG_RESET_SYSTEM.lock(|f| f.clone().into_inner())
+        if WATCHDOG_RESET_SYSTEM.lock(|f| *f.borrow())
         {
             watchdog.trigger_reset();
         }
@@ -548,9 +543,9 @@ async fn main(spawner: Spawner) {
 
 #[embassy_executor::task(pool_size = 4)]
 async fn listen_task(stack: Stack<'static>, port: u16) {
-    let mut rx_buffer = [0; 4096];
-    let mut tx_buffer = [0; 4096];
-    let mut buf = [0; 4096];
+    let mut rx_buffer = [0; 1024];
+    let mut tx_buffer = [0; 1024];
+    let mut buf = [0; 256];
 
     loop {
         let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
@@ -566,7 +561,7 @@ async fn listen_task(stack: Stack<'static>, port: u16) {
         // Remote IP: socket.remote_endpoint()
 
         SOCKETS_CONNECTED.lock(|f| {
-            let socket_count = f.clone().into_inner();
+            let socket_count = *f.borrow();
             f.replace(socket_count + 1);
         });
 
@@ -604,7 +599,7 @@ async fn listen_task(stack: Stack<'static>, port: u16) {
                     info!("Parsed get_pos!");
 
                     let mut buf = [0u8; 15];
-                    let (local_az_degrees, local_el_degrees) = CURRENT_AZ_EL_DEGREES.lock(|f| f.clone().into_inner());
+                    let (local_az_degrees, local_el_degrees) = CURRENT_AZ_EL_DEGREES.lock(|f| *f.borrow());
                     let _ = format_no_std::show(
                         &mut buf,
                         format_args!("{:.2}\n{:.2}\n", local_az_degrees, local_el_degrees),
@@ -616,8 +611,8 @@ async fn listen_task(stack: Stack<'static>, port: u16) {
                     info!("Parsed stop!");
 
                     DEMAND_RUN_AZ_EL_DEGREES.lock(|f| {
-                        let (_, _az, _el) = f.clone().into_inner();
-                        f.replace((false, _az, _el));
+                        let (_, az, el) = *f.borrow();
+                        f.replace((false, az, el));
                     });
 
                     let _ = socket.write(b"RPRT 0\n").await;
@@ -634,11 +629,8 @@ async fn listen_task(stack: Stack<'static>, port: u16) {
                 HamlibCommand::SetPos => {
                     info!("Parsed Set Pos! ({}, {})", demand_az, demand_el);
 
-                    if demand_az < 0.0 { demand_az = 0.0; }
-                    if demand_az > CONTROL_AZ_DEGREES_MAXIMUM { demand_az = CONTROL_AZ_DEGREES_MAXIMUM; }
-
-                    if demand_el < 0.0 { demand_el = 0.0; }
-                    if demand_el > CONTROL_EL_DEGREES_MAXIMUM { demand_el = CONTROL_EL_DEGREES_MAXIMUM; }
+                    demand_az = demand_az.clamp(0.0, CONTROL_AZ_DEGREES_MAXIMUM);
+                    demand_el = demand_el.clamp(0.0, CONTROL_EL_DEGREES_MAXIMUM);
 
                     DEMAND_RUN_AZ_EL_DEGREES.lock(|f| {
                         f.replace((true, demand_az, demand_el));
@@ -657,11 +649,11 @@ async fn listen_task(stack: Stack<'static>, port: u16) {
 
                     let mut buf = [0u8; 768];
 
-                    let local_flash_uuid = FLASH_UUID.lock(|f| f.clone().into_inner());
-                    let local_sockets_connected = SOCKETS_CONNECTED.lock(|f| f.clone().into_inner());
-                    let (local_az_degrees, local_el_degrees) = CURRENT_AZ_EL_DEGREES.lock(|f| f.clone().into_inner());
-                    let (local_run, local_demand_az_degrees, local_demand_el_degrees) = DEMAND_RUN_AZ_EL_DEGREES.lock(|f| f.clone().into_inner());
-                    let (local_az_raw, local_el_raw) = CURRENT_AZ_EL_RAW.lock(|f| f.clone().into_inner());
+                    let local_flash_uuid = FLASH_UUID.lock(|f| *f.borrow());
+                    let local_sockets_connected = SOCKETS_CONNECTED.lock(|f| *f.borrow());
+                    let (local_az_degrees, local_el_degrees) = CURRENT_AZ_EL_DEGREES.lock(|f| *f.borrow());
+                    let (local_run, local_demand_az_degrees, local_demand_el_degrees) = DEMAND_RUN_AZ_EL_DEGREES.lock(|f| *f.borrow());
+                    let (local_az_raw, local_el_raw) = CURRENT_AZ_EL_RAW.lock(|f| *f.borrow());
 
                     let _ = format_no_std::show(
                         &mut buf,
@@ -708,17 +700,32 @@ async fn listen_task(stack: Stack<'static>, port: u16) {
         // Disconnected.
 
         SOCKETS_CONNECTED.lock(|f| {
-            let socket_count = f.clone().into_inner();
-            f.replace(socket_count - 1);
+            let socket_count = *f.borrow();
+            f.replace(socket_count.saturating_sub(1));
         });
     }
 }
 
-async fn wait_for_dhcp_config(stack: Stack<'static>) -> embassy_net::StaticConfigV4 {
+/// Wait for DHCP configuration with timeout
+/// 
+/// Returns: Option<StaticConfigV4>
+/// - Some(config) if DHCP succeeds within timeout
+/// - None if DHCP times out
+/// 
+/// When DHCP fails, the device continues operating without network functionality.
+async fn wait_for_dhcp_config(stack: Stack<'static>) -> Option<embassy_net::StaticConfigV4> {
+    let start = Instant::now();
+    
     loop {
         if let Some(config) = stack.config_v4() {
-            return config.clone();
+            return Some(config.clone());
         }
+        
+        // Check if we've exceeded the timeout
+        if start.elapsed().as_millis() > DHCP_TIMEOUT_MS {
+            return None;
+        }
+        
         yield_now().await;
     }
 }
