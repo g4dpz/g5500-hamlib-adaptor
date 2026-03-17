@@ -1,0 +1,19 @@
+[default.general]
+chip = "RP2040"
+
+[default.flashing]
+enabled = true
+halt_afterwards = false
+restore_unwritten_bytes = false
+
+[default.reset]
+enabled = true
+halt_afterwards = true
+
+[default.rtt]
+enabled = true
+up_mode = "NoBlockSkip"
+timeout = 3000
+
+[default.gdb]
+enabled = false

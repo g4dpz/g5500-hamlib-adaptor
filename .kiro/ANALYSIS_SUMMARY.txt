@@ -1,0 +1,481 @@
+================================================================================
+G-5500 HAMLIB ADAPTOR - REPOSITORY ANALYSIS SUMMARY
+================================================================================
+
+PROJECT ANALYSIS COMPLETED
+Generated: 2025
+Analyzed Files: 15+ documentation and source files
+
+================================================================================
+PROJECT OVERVIEW
+================================================================================
+
+Name: G-5500 Hamlib Adaptor
+Purpose: Network-connected physical adaptor providing a Hamlib interface for 
+         the G-5500 Az+El rotator, primarily for Gpredict
+
+Hardware: Wiznet Pi Pico (W5500-EVB-Pico) with RP2040 microcontroller
+Language: Rust (no_std, embedded)
+Framework: Embassy (async runtime for embedded systems)
+License: BSD 3-clause License
+
+Key Features:
+- Async/concurrent network handling (up to 4 simultaneous HamLib clients)
+- Real-time azimuth/elevation monitoring via ADC
+- Relay-based rotator control (CW/CCW for Az, UP/DN for El)
+- DHCP with graceful failure (device continues operating without network)
+- LED status indicators (network status + client connections)
+- Watchdog timer for system reliability
+- Git version tracking in firmware
+
+================================================================================
+TECHNOLOGY STACK
+================================================================================
+
+Core:
+  - Rust 1.85.1+ (latest stable)
+  - Target: thumbv6m-none-eabi (Cortex-M0+)
+  - Edition: 2021
+  - no_std, no_main
+
+Async Runtime:
+  - Embassy 0.7.0 (executor)
+  - Embassy-rp 0.4.0 (RP2040 HAL)
+  - Embassy-net 0.7.0 (TCP/IP stack)
+  - Embassy-net-wiznet 0.2.0 (W5500 driver)
+
+Key Dependencies:
+  - defmt 0.3 (structured logging)
+  - nom 8.0.0 (parser combinators)
+  - heapless 0.8.0 (no-std collections)
+  - cortex-m 0.7.6 (ARM utilities)
+  - embedded-hal 1.0 (hardware traits)
+
+Build Tools:
+  - Cargo (package manager)
+  - probe-rs (SWD debugging)
+  - elf2uf2-rs (UF2 conversion, optional)
+
+================================================================================
+ARCHITECTURE
+================================================================================
+
+Task-Based Concurrency:
+  - ethernet_task: W5500 driver runner
+  - net_task: Network stack runner
+  - led_blink_task: System LED status indicator
+  - control_task: Rotator control (Az/El relay outputs)
+  - adc_task: Position monitoring (Az/El ADC inputs)
+  - listen_task: TCP socket handler (pool of 4)
+
+Shared State Management:
+  - Mutex<ThreadModeRawMutex, RefCell<T>> pattern
+  - Static state for Az/El degrees, demand values, network status
+  - Thread-safe access without heap allocation
+
+Protocol Implementation:
+  - HamLib rotctld protocol (partial implementation)
+  - nom parser combinators for command parsing
+  - Supported commands: GetInfo, GetPos, Stop, Park, SetPos, Quit, DumpState, Reset
+
+Hardware Integration:
+  - SPI0 for W5500 Ethernet (50 MHz)
+  - ADC for position monitoring (10kHz sampling, 512 samples per 100ms)
+  - GPIO for relay control (4 outputs) and LED status (2 outputs)
+  - DMA for SPI and ADC transfers
+  - Watchdog timer (8.3s timeout)
+
+================================================================================
+CODE PATTERNS & CONVENTIONS
+================================================================================
+
+Naming:
+  - Tasks: snake_case with _task suffix
+  - Constants: UPPER_SNAKE_CASE
+  - Functions: snake_case
+  - Types/Enums: PascalCase
+  - Static state: UPPER_SNAKE_CASE
+
+Patterns:
+  - Inline hints on hot path functions
+  - Saturating arithmetic for counters
+  - Efficient clamping with .clamp()
+  - Simplified boolean logic
+  - Early returns in parsers
+
+Error Handling:
+  - unwrap!() macro for critical paths
+  - Pattern matching for recoverable errors
+  - Graceful DHCP failure (5s timeout)
+  - Socket timeout (60s idle)
+
+Logging:
+  - defmt for structured logging
+  - Log levels: error, warn, info, debug
+  - RTT transport for real-time output
+
+================================================================================
+BUILD SYSTEM
+================================================================================
+
+Build Profiles:
+  Release (Production):
+    - lto = "fat" (full link-time optimization)
+    - opt-level = 'z' (optimize for size)
+    - codegen-units = 1 (single codegen unit)
+    - panic = "abort" (smaller panic handler)
+    - Output: ~244KB (12% of 2MB flash)
+
+  Debug (Development):
+    - lto = true
+    - opt-level = "z"
+    - panic = "abort"
+
+Flashing Methods:
+  1. UF2 Bootloader (Recommended - macOS compatible)
+     - Hold BOOTSEL, plug USB, release
+     - cargo run
+  
+  2. probe-rs (SWD Debugger)
+     - Requires debug probe hardware
+     - Real-time debugging and RTT logging
+  
+  3. Helper Script
+     - ./flash.sh (interactive)
+
+Build Commands:
+  cargo build              # Debug build
+  cargo build --release    # Release build
+  cargo run                # Build, flash, and run
+  cargo check              # Check without building
+  cargo bloat --release    # Analyze binary size
+
+================================================================================
+HARDWARE ARCHITECTURE
+================================================================================
+
+Microcontroller: RP2040 (Cortex-M0+)
+  - Clock: 125 MHz
+  - RAM: 264KB (256KB main + 8KB scratch)
+  - Flash: 2MB
+  - GPIO: 30 pins (28 usable)
+  - ADC: 4-channel 12-bit
+  - SPI: 2 instances
+  - DMA: 12 channels
+  - Watchdog: 8.3ms - 8.3s timeout
+
+Pin Assignments:
+  Control Outputs (GPIO):
+    - GPIO 2: Azimuth CW
+    - GPIO 3: Azimuth CCW
+    - GPIO 4: Elevation UP
+    - GPIO 5: Elevation DN
+
+  Position Inputs (ADC):
+    - GPIO 26: Azimuth position (ADC0)
+    - GPIO 27: Elevation position (ADC1)
+
+  Status LEDs:
+    - GPIO 25: System LED (onboard, network status)
+    - GPIO 15: Sockets LED (external, client connections)
+
+  Ethernet (W5500 via SPI0):
+    - GPIO 16: SPI MISO
+    - GPIO 17: SPI CS
+    - GPIO 18: SPI CLK
+    - GPIO 19: SPI MOSI
+    - GPIO 20: W5500 Reset
+    - GPIO 21: W5500 Interrupt
+
+Voltage Divider:
+  - G-5500 outputs 0-5V
+  - RP2040 ADC accepts 0-3.3V
+  - 10kΩ/10kΩ divider (ratio 0.5)
+  - 5V input → 2.5V at ADC
+
+Power Budget:
+  - USB Input: 5V @ 500mA
+  - RP2040 Core: ~50mA
+  - W5500: ~130mA
+  - Relays: ~200mA (external power recommended)
+  - Total: ~400mA (within USB limit)
+
+Memory Layout:
+  Flash:
+    0x10000000 - 0x10000100: Boot2 (256 bytes)
+    0x10000100 - 0x101E0000: Firmware (~1920KB)
+    0x101E0000 - 0x10200000: Config (128KB, reserved)
+
+  RAM:
+    0x20000000 - 0x20040000: Main RAM (256KB)
+    0x20040000 - 0x20041000: Scratch A (4KB, optional)
+    0x20041000 - 0x20042000: Scratch B (4KB, optional)
+
+Current Usage:
+  - BSS (static data): ~126KB (48%)
+  - Stack: Allocated from remaining
+  - Heap: Not used (no_std)
+  - Available: ~138KB
+
+================================================================================
+KEY CONSTANTS
+================================================================================
+
+Timing:
+  WATCHDOG_PERIOD_MS: 8300 ms (max 8388ms)
+  DHCP_TIMEOUT_MS: 5000 ms
+  SOCKET_TIMEOUT_S: 60 seconds
+  ADC_SAMPLE_RATE: 10 kHz
+  CONTROL_LOOP_TICK: 250 ms
+  LED_BLINK_SLOW: 1000 ms (no network)
+  LED_BLINK_FAST: 500 ms (network connected)
+
+Network:
+  NUMBER_HAMLIB_SOCKETS: 4 (max concurrent clients)
+  DHCP_HOSTNAME: "g5500-hamlib-adaptor"
+  TCP_PORT: 4533
+
+Rotator Control:
+  PARK_AZ_DEGREES: 180.0
+  PARK_EL_DEGREES: 0.0
+  CONTROL_DEGREES_THRESHOLD: 3.0
+  CONTROL_AZ_DEGREES_MAXIMUM: 450.0
+  CONTROL_EL_DEGREES_MAXIMUM: 180.0
+
+ADC Calibration:
+  UPPER_RESISTOR_K: 10.0
+  LOWER_RESISTOR_K: 10.0
+  LADDER_RATIO: 0.5
+  VREF_V: 3.3
+  G5500_VOLTAGE_LOW: 0.0
+  G5500_VOLTAGE_HIGH: 5.0
+
+================================================================================
+HAMLIB PROTOCOL SUPPORT
+================================================================================
+
+Implemented Commands:
+  _ or \get_info          - Get device information
+  p or \get_pos           - Get current azimuth and elevation
+  S or \stop              - Stop rotator movement
+  K or \park              - Move to park position (180°, 0°)
+  P or \set_pos AZ EL     - Set target position
+  q or \quit              - Close connection
+  \dump_state             - Get full device diagnostics
+  R or \reset             - System reset (via watchdog)
+
+Response Format:
+  - Commands return "RPRT 0\n" for success
+  - Commands return "RPRT 1\n" for error
+  - Position queries return "AZ\nEL\n" format
+  - Info returns "Info \"<product>, firmware: <version>\"\n"
+
+================================================================================
+OPTIMIZATION ACHIEVEMENTS
+================================================================================
+
+Size Reduction:
+  Before: 124,160 bytes (text)
+  After: 123,564 bytes (text)
+  Saved: 596 bytes (0.5% reduction)
+
+Memory Optimization:
+  - TCP buffers: 4096 → 1024 bytes (rx/tx)
+  - Command buffer: 4096 → 256 bytes
+  - Stack memory saved: ~96KB across 4 socket tasks
+
+Techniques Applied:
+  - Mutex access optimization (eliminated cloning)
+  - Boolean comparison simplification
+  - LED control optimization
+  - Float clamping efficiency
+  - ADC DNL spike detection optimization
+  - Parser optimization with inline hints
+  - Saturating arithmetic for safety
+
+Compiler Optimizations:
+  - Fat LTO (link-time optimization)
+  - Single codegen unit
+  - Size optimization (opt-level = 'z')
+  - Panic abort (no unwinding)
+
+================================================================================
+RELIABILITY FEATURES
+================================================================================
+
+Watchdog Timer:
+  - 8.3 second timeout
+  - Fed every 250ms in main loop
+  - Prevents system hang
+  - Triggers system reset on timeout
+
+DHCP Handling:
+  - 5 second timeout
+  - Graceful failure (device continues without network)
+  - Clear logging of success/failure
+  - Network services only started on success
+
+Socket Management:
+  - 60 second idle timeout per socket
+  - Up to 4 concurrent connections
+  - Automatic cleanup on timeout
+  - Connection counter for LED status
+
+ADC Filtering:
+  - DNL spike detection and filtering
+  - 512 samples per 100ms (averaging)
+  - Clamping to valid ranges
+  - Saturating arithmetic for counters
+
+================================================================================
+DOCUMENTATION FILES CREATED
+================================================================================
+
+.kiro/README.md
+  - Overview of all steering files
+  - Quick reference for common tasks
+  - Key constants and pin assignments
+  - Architecture diagram
+  - Development workflow
+  - Getting help guide
+
+.kiro/PROJECT_OVERVIEW.md
+  - Project purpose and goals
+  - Hardware platform specifications
+  - Key features
+  - Technology stack overview
+  - Project structure
+  - Licensing information
+
+.kiro/TECH_STACK.md
+  - Core language and runtime details
+  - Async runtime (Embassy) specifications
+  - Hardware abstraction layers
+  - Networking stack details
+  - Build profiles and optimization
+  - Memory layout and constraints
+  - Dependency versions
+
+.kiro/CODE_PATTERNS.md
+  - Task-based concurrency model
+  - Shared state management patterns
+  - Protocol parsing approach
+  - Logging conventions
+  - Timing and delay patterns
+  - GPIO and ADC patterns
+  - Network socket patterns
+  - Error handling strategies
+  - Naming conventions
+  - Optimization techniques
+
+.kiro/BUILD_DEPLOYMENT.md
+  - Cargo configuration details
+  - Build script explanation
+  - Build profiles (release vs debug)
+  - Flashing methods (3 options)
+  - Cargo commands and analysis tools
+  - Memory layout and usage
+  - Deployment checklist
+  - Troubleshooting guide
+  - Release process
+
+.kiro/HARDWARE_ARCHITECTURE.md
+  - RP2040 microcontroller specifications
+  - W5500-EVB-Pico board features
+  - Complete pin assignments (all GPIO)
+  - Voltage divider configuration
+  - Relay driver interface
+  - Power distribution and budget
+  - Clock configuration
+  - Watchdog timer setup
+  - DMA channel allocation
+  - Memory mapping
+  - Debugging interfaces
+  - Expansion possibilities
+
+================================================================================
+RECOMMENDATIONS FOR DEVELOPERS
+================================================================================
+
+Getting Started:
+  1. Read .kiro/README.md for overview
+  2. Read .kiro/PROJECT_OVERVIEW.md to understand the project
+  3. Read .kiro/TECH_STACK.md to understand dependencies
+  4. Read .kiro/CODE_PATTERNS.md before writing code
+  5. Read .kiro/HARDWARE_ARCHITECTURE.md for hardware details
+
+Development:
+  - Follow naming conventions in CODE_PATTERNS.md
+  - Use established patterns for new features
+  - Keep memory usage in mind (264KB RAM total)
+  - Test on actual hardware before submitting
+  - Update steering files if adding new patterns
+
+Building & Deployment:
+  - Use cargo build --release for production
+  - Use UF2 bootloader method for flashing (macOS compatible)
+  - Check binary size with arm-none-eabi-size
+  - Follow deployment checklist in BUILD_DEPLOYMENT.md
+  - Test with telnet before deployment
+
+Debugging:
+  - Use cargo run for RTT logging
+  - Use \dump_state command for diagnostics
+  - Check LED indicators for status
+  - Monitor watchdog timeout (8.3s)
+  - Verify DHCP success (5s timeout)
+
+================================================================================
+IMPORTANT CONSTRAINTS
+================================================================================
+
+Memory:
+  - Total RAM: 264KB
+  - Static data: ~126KB (48%)
+  - Available for stack: ~138KB
+  - No heap (no_std environment)
+  - No dynamic allocation
+
+Performance:
+  - ADC sampling: 10kHz (100ms per sample)
+  - Control loop: 250ms tick
+  - Network: Async, non-blocking
+  - Watchdog: 8.3s timeout
+  - DHCP: 5s timeout
+
+Hardware:
+  - GPIO max: 12mA per pin
+  - 3.3V logic levels (not 5V tolerant)
+  - Voltage divider required for 5V inputs
+  - External relay drivers required for rotator control
+  - SPI frequency: 50 MHz (W5500 compatible)
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+For New Developers:
+  1. Clone the repository
+  2. Install Rust toolchain (1.85.1+)
+  3. Install probe-rs: cargo install probe-rs --features=cli
+  4. Read .kiro/README.md
+  5. Follow BUILD_DEPLOYMENT.md to build and flash
+  6. Test with telnet to verify functionality
+
+For Contributors:
+  1. Read all steering files in .kiro/
+  2. Follow CODE_PATTERNS.md conventions
+  3. Keep HARDWARE_ARCHITECTURE.md in mind
+  4. Test on actual hardware
+  5. Update steering files if adding new patterns
+
+For Maintenance:
+  1. Keep steering files updated with code changes
+  2. Document new patterns in CODE_PATTERNS.md
+  3. Update TECH_STACK.md if dependencies change
+  4. Update BUILD_DEPLOYMENT.md if build process changes
+  5. Update HARDWARE_ARCHITECTURE.md if hardware changes
+
+================================================================================
+END OF ANALYSIS SUMMARY
+================================================================================

@@ -47,3 +47,24 @@ pub fn crc8_ccitt_nolookup_byte(mut value: u8) -> u8 {
     }
     value
 }
+
+/// Compute CRC8-CCITT over a byte slice
+#[allow(dead_code)]
+pub fn crc8_ccitt_buffer(data: &[u8]) -> u8 {
+    let mut crc: u8 = 0x00;
+    for &b in data {
+        crc = CRC8_CCITT_TABLE[(crc ^ b) as usize];
+    }
+    crc
+}
+
+/// Validate a buffer where the last byte is the expected CRC8
+/// Returns true if CRC over data[..len-1] matches data[len-1]
+#[allow(dead_code)]
+pub fn crc8_ccitt_validate(data: &[u8]) -> bool {
+    if data.len() < 2 {
+        return false;
+    }
+    let crc = crc8_ccitt_buffer(&data[..data.len() - 1]);
+    crc == data[data.len() - 1]
+}

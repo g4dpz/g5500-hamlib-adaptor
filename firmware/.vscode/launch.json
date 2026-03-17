@@ -1,0 +1,46 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "probe-rs-debug",
+            "request": "launch",
+            "name": "Debug RP2040 (probe-rs)",
+            "cwd": "${workspaceFolder}",
+            "chip": "RP2040",
+            "flashingConfig": {
+                "flashingEnabled": true,
+                "resetAfterFlashing": true,
+                "haltAfterReset": true
+            },
+            "coreConfigs": [
+                {
+                    "coreIndex": 0,
+                    "programBinary": "${workspaceFolder}/target/thumbv6m-none-eabi/debug/g5500-hamlib-adaptor",
+                    "runtimeExecutable": "probe-rs",
+                    "runtimeArgs": [
+                        "dap-server"
+                    ],
+                    "svdFile": null
+                }
+            ],
+            "consoleLogLevel": "Info"
+        },
+        {
+            "type": "cortex-debug",
+            "request": "launch",
+            "name": "Debug RP2040 (OpenOCD)",
+            "servertype": "openocd",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build",
+            "executable": "${workspaceFolder}/target/thumbv6m-none-eabi/debug/g5500-hamlib-adaptor",
+            "device": "RP2040",
+            "configFiles": [
+                "interface/cmsis-dap.cfg",
+                "target/rp2040.cfg"
+            ],
+            "svdFile": null,
+            "runToEntryPoint": "main",
+            "showDevDebugOutput": "both"
+        }
+    ]
+}
